@@ -126,7 +126,7 @@ for date, season_id in regular_season_end_dates:
             ot = team["otLosses"]
             points = team["points"]
             division_name = team["divisionName"]
-            conference_name = team.get("conferenceName")
+            conference_name = team.get("conferenceName") #might be undefined
             abbreviation = team["teamAbbrev"]["default"]
 
             print(f"Season {season_id}: Conference = {conference_name}")
