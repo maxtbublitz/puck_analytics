@@ -1,3 +1,7 @@
+# Fetches roster information from the api
+# Team seasons are created from the data
+# Rosters are created from the data with a corresponding team season
+
 from dotenv import load_dotenv
 from datetime import datetime
 import os

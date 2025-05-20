@@ -1,3 +1,6 @@
+# Populate divisions and conferences table
+# Add record (wins, losses ect) to team seasons table
+
 from dotenv import load_dotenv
 from datetime import datetime
 import os
@@ -126,7 +129,7 @@ for date, season_id in regular_season_end_dates:
             ot = team["otLosses"]
             points = team["points"]
             division_name = team["divisionName"]
-            conference_name = team.get("conferenceName") #might be undefined
+            conference_name = team.get("conferenceName")
             abbreviation = team["teamAbbrev"]["default"]
 
             print(f"Season {season_id}: Conference = {conference_name}")

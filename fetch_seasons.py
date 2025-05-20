@@ -1,3 +1,7 @@
+# fetches the seasons data
+# data is stored as integers ex 20232024
+# inserts seasons into seasons table
+
 from dotenv import load_dotenv
 from datetime import datetime
 import os
@@ -10,8 +14,6 @@ load_dotenv()
 base_url = os.getenv("NHL_API_URL_2")
 seasonEndpoint = "stats/rest/en/season"
 url = f"{base_url}/{seasonEndpoint}"
-
-print(url)
 
 # Connect to PostgreSQL
 conn = psycopg2.connect(
