@@ -114,6 +114,22 @@ if response.status_code == 200:
                 """,(game_id, team_season_id, goal_order, period, time_in_period, situation_code, home_score, away_score))
 
                 goals += 1
+            if play == "hit":
+                # add hit to player stats
+                hitting_player_id = event["details"]["hittingPlayerId"]
+                hitting_team_id = event["details"]["eventOwnerTeamId"]
+                if hitting_team_id == home_team_id:
+                    team_season_id = home_team_season_id
+                    team_season_name = home_team_name
+                else:
+                    team_season_id = away_team_season_id
+                    team_season_name = away_team_name
+                print(team_season_id, team_season_name)
+                 cur.execute("""
+                    UPDATE player_stats
+                    SET hits = hits + 1
+                    WHERE team_season_id = %s AND player_id = %s
+                """, (team_season_id, hitting_player_id))
 
 
 else:
