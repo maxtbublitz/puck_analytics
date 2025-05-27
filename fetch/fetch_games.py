@@ -1,27 +1,19 @@
-from dotenv import load_dotenv
 from datetime import datetime
-import os
 import requests
 import psycopg2
 import sys
+import 
 
-load_dotenv()
+from db.connection import get_connection
+
+conn = get_connection()
+cur = conn.cursor()
+print("Connected to database!")
 
 base_url = os.getenv("NHL_API_URL")
 game_endpoint = "v1/gamecenter/2023020205/play-by-play"
 # url = f"{base_url}/{game_endpoint}"
 url = "https://api-web.nhle.com/v1/gamecenter/2023020205/play-by-play"
-
-# Connect to PostgreSQL
-conn = psycopg2.connect(
-    dbname=os.getenv("DB_NAME"),
-    user=os.getenv("DB_USER"),
-    password=os.getenv("DB_PASSWORD"),
-    host=os.getenv("DB_HOST"),
-    port=os.getenv("DB_PORT")
-)
-cur = conn.cursor()
-print("Connected to database")
 
 def get_team_season_id(cur, team_id, season_id):
     cur.execute(

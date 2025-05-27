@@ -20,13 +20,17 @@ conn = psycopg2.connect(
 cur = conn.cursor()
 print("Connected to database")
 
-ignore_leagues = ["WC-A", "WJC-A", "Olympics", "ECHL", "M-Cup", "International", "WCup", "4 Nations" ]
+ignore_leagues = ["WC-A", "WJC-A", "Olympics", "ECHL", "M-Cup", "International", "WCup", "4 Nations"]
 
 cur.execute("""
     SELECT id FROM players
 """)
-
 players = [row[0] for row in cur.fetchall()]  # flattening to just IDs
+
+cur.execute("""
+    SELECT id FROM seasons;
+""")
+seasons = [row[0] for row in cur.fetchall()]
 
 for player in players:
     url = f"{base_url}/v1/player/{str(player)}/landing"
@@ -41,6 +45,7 @@ for player in players:
 
         previous_team = "N/A"
         for season in season_stats:
+            # handle ameture league
             if season["leagueAbbrev"] == "NHL" or season["leagueAbbrev"] == "AHL":
                 print(player, previous_team)
                 cur.execute("""
@@ -55,9 +60,11 @@ for player in players:
                 else:
                     previous_team = season["leagueAbbrev"]
 
+
+
     
 # Commit changes to database
-conn.commit()
+# conn.commit()
 
 # Cleanup
 cur.close()
