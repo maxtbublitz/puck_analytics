@@ -31,7 +31,7 @@ seasons_data = response.json()["data"]
 
 for season in seasons_data:
     id =  season["id"]
-    if(id >= 20092010):
+    if(id >= 20242025):
         print("Adding columns to year ", {id})
         season_start_year = int(str(id)[:4])
         season_end_year = int(str(id)[4:])

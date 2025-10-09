@@ -28,6 +28,8 @@ cur.execute("""
     FROM seasons, teams;
 """)
 
+# will need some code here to avoid Utah call until 2025, and remove the duplicate call it generates with the two team names
+
 season_team_pairs = cur.fetchall()
 
 for season_id, abbreviation, team_id in season_team_pairs:

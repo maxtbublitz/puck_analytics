@@ -53,38 +53,6 @@ def get_or_create_division(cur, name, conference_id):
     
     return cur.fetchone()[0]
 
-def get_or_create_division(cur, name, conference_id, season_id):
-    if conference_id:
-        cur.execute("""
-            SELECT id FROM divisions
-            WHERE name = %s AND conference_id = %s AND season_id = %s
-        """, (name, conference_id, season_id))
-    else:
-        cur.execute("""
-            SELECT id FROM divisions
-            WHERE name = %s AND conference_id IS NULL AND season_id = %s
-        """, (name, season_id))
-
-    result = cur.fetchone()
-    if result:
-        return result[0]
-
-    if conference_id:
-        cur.execute("""
-            INSERT INTO divisions (name, conference_id, season_id)
-            VALUES (%s, %s, %s)
-            RETURNING id
-        """, (name, conference_id, season_id))
-    else:
-        cur.execute("""
-            INSERT INTO divisions (name, conference_id, season_id)
-            VALUES (%s, NULL, %s)
-            RETURNING id
-        """, (name, season_id))
-
-    return cur.fetchone()[0]
-
-
 def get_team_id(cur, abbreviation):
     cur.execute("SELECT id FROM teams WHERE abbreviation = %s", (abbreviation,))
     result = cur.fetchone()
