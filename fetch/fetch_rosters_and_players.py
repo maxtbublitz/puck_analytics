@@ -33,6 +33,11 @@ cur.execute("""
 season_team_pairs = cur.fetchall()
 
 for season_id, abbreviation, team_id in season_team_pairs:
+    if season_id < 20242025 and abbreviation == "UTA":
+        continue
+    if season_id != 20252026:
+        continue 
+
     url = f"{base_url}/v1/roster/{abbreviation}/{season_id}"
     response = requests.get(url)
 

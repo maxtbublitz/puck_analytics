@@ -24,7 +24,7 @@ def get_or_create_conference(cur, name, season_id):
     """, (name, season_id))
     return cur.fetchone()[0]
 
-def get_or_create_division(cur, name, conference_id):
+def get_or_create_division(cur, name, conference_id, season_id):
     if conference_id:
         cur.execute("""
             SELECT id FROM divisions WHERE name = %s AND conference_id = %s
@@ -40,13 +40,13 @@ def get_or_create_division(cur, name, conference_id):
 
     if conference_id:
         cur.execute("""
-            INSERT INTO divisions (name, conference_id)
-            VALUES (%s, %s)
+            INSERT INTO divisions (name, conference_id, season_id)
+            VALUES (%s, %s, %s)
             RETURNING id
-        """, (name, conference_id))
+        """, (name, conference_id, season_id))
     else:
         cur.execute("""
-            INSERT INTO divisions (name, conference_id)
+            INSERT INTO divisions (name, conference_id, season_id)
             VALUES (%s, NULL)
             RETURNING id
         """, (name,))
@@ -81,7 +81,21 @@ cur.execute("SELECT regular_season_end_date, id AS season_id FROM seasons;")
 # Fetch all rows
 rows = cur.fetchall()
 
-regular_season_end_dates = [(row[0].strftime('%Y-%m-%d'), row[1]) for row in rows]
+current_date = datetime.now().date()
+
+# Prepare regular season end dates (adjust logic to use 'now' if end date is after today)
+regular_season_end_dates = []
+
+for row in rows:
+    season_end_date = row[0]  # regular_season_end_date is already a date object
+    season_id = row[1]
+    
+    # Use current date if season end date is after today
+    if season_end_date > current_date:
+        season_end_date = current_date
+    
+    regular_season_end_dates.append((season_end_date.strftime('%Y-%m-%d'), season_id))
+
 
 for date, season_id in regular_season_end_dates:
     seasonUrl = f"{url}{date}"
