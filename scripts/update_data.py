@@ -14,7 +14,9 @@ from database.crud import (
     get_team_seasons_from_api,
     insert_team_seasons_into_db,
     get_players_from_api,
-    insert_players_into_db
+    insert_players_into_db,
+    get_rosters_from_api,
+    insert_rosters_into_db
 )
 
 def update_seasons(conn, base_url):
@@ -66,6 +68,18 @@ def update_players(conn, base_url):
     except Exception as e:
         print(f"❌ Error updating players: {e}")
         return False
+
+def update_rosters(conn, base_url):
+    """Fetches and processes roster data from the API."""
+    try:
+        print("\n--- Starting Rosters Update ---")
+        rosters_data = get_rosters_from_api(conn, base_url)
+        print(f"API fetched {len(rosters_data)} eligible roster records.")
+        insert_rosters_into_db(conn, rosters_data)
+        return True
+    except Exception as e:
+        print(f"❌ Error updating rosters: {e}")
+        return False
         
 def run_update_sequence(target=None):
     """
@@ -89,6 +103,7 @@ def run_update_sequence(target=None):
         'teams': update_teams,
         'team_seasons': update_team_seasons,
         'players': update_players,
+        'rosters': update_rosters
         # Add future functions here: 'games': update_games,
     }
     
@@ -105,6 +120,7 @@ def run_update_sequence(target=None):
             update_teams(conn, base_url)
             update_team_seasons(conn, base_url_2)
             update_players(conn, base_url_2)
+            update_rosters(conn, base_url_2)
         else:
             print(f"🛑 Error: Unknown update target '{target}'. Must be one of: {list(update_map.keys())} or left blank.")
 
