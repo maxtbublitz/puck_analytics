@@ -20,7 +20,7 @@ conn = psycopg2.connect(
 cur = conn.cursor()
 print("Connected to database")
 
-ignore_leagues = ["WC-A", "WJC-A", "Olympics", "ECHL", "M-Cup", "International", "WCup", "4 Nations"]
+ignore_leagues = ["WC-A", "WJC-A", "Olympics", "ECHL", "M-Cup", "International", "WCup", "4 Nations", "WJC-20", "WJC-18", "WJC-B", "WC", "Nat-Tm", "Hlinka Gretzky Cup", " Ivan Hlinka Memorial", "WJC-20 D1A"]
 
 cur.execute("""
     SELECT id FROM players
