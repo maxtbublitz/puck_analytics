@@ -2,7 +2,7 @@ from datetime import datetime
 import requests
 import psycopg2
 import sys
-import 
+import os
 
 from db.connection import get_connection
 
@@ -117,7 +117,7 @@ if response.status_code == 200:
                     team_season_id = away_team_season_id
                     team_season_name = away_team_name
                 print(team_season_id, team_season_name)
-                 cur.execute("""
+                cur.execute("""
                     UPDATE player_stats
                     SET hits = hits + 1
                     WHERE team_season_id = %s AND player_id = %s

@@ -15,8 +15,8 @@ from database.crud import (
     insert_team_seasons_into_db,
     get_players_from_api,
     insert_players_into_db,
-    get_rosters_from_api,
-    insert_rosters_into_db
+    insert_rosters_into_db,
+    get_standings_from_api
 )
 
 def update_seasons(conn, base_url):
@@ -73,12 +73,37 @@ def update_rosters(conn, base_url):
     """Fetches and processes roster data from the API."""
     try:
         print("\n--- Starting Rosters Update ---")
-        rosters_data = get_rosters_from_api(conn, base_url)
+        # Reuse consolidated get_players_from_api with roster info included
+        players_with_rosters = get_players_from_api(conn, base_url, include_roster_info=True)
+        # Extract roster-specific fields expected by insert_rosters_into_db
+        rosters_data = []
+        for p in players_with_rosters:
+            # Only include entries that have team_season_id and player_id
+            if p.get("team_season_id") and p.get("player_id"):
+                rosters_data.append({
+                    "team_season_id": p.get("team_season_id"),
+                    "player_id": p.get("player_id"),
+                    "jersey_number": p.get("jersey_number"),
+                    "position": p.get("position"),
+                    "player_height_inches": p.get("player_height_inches"),
+                    "player_weight_pounds": p.get("player_weight_pounds"),
+                })
+
         print(f"API fetched {len(rosters_data)} eligible roster records.")
         insert_rosters_into_db(conn, rosters_data)
         return True
     except Exception as e:
         print(f"❌ Error updating rosters: {e}")
+        return False
+    
+def update_standings(conn, base_url):
+    """Fetches and processes standing data from the API."""
+    try:
+        standings_data = get_standings_from_api(conn, base_url)
+        print(f"API fetched {len(standings_data)} eligible standing records.")
+        return True
+    except Exception as e:
+        print(f"❌ Error updating standings: {e}")
         return False
         
 def run_update_sequence(target=None):
@@ -103,11 +128,10 @@ def run_update_sequence(target=None):
         'teams': update_teams,
         'team_seasons': update_team_seasons,
         'players': update_players,
-        'rosters': update_rosters
-        # Add future functions here: 'games': update_games,
+        'rosters': update_rosters,
+        'standings': update_standings,
     }
     
-    # ... (rest of the function logic remains the same) ...
 
     try:
         if target and target in update_map:

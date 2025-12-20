@@ -4,49 +4,16 @@ import time
 import psycopg2
 from datetime import datetime
 
-def get_with_retry(url, session=None, max_retries=5, backoff_factor=1, timeout=10):
-        """Simple GET with exponential backoff and Retry-After handling.
+from .db_helpers import get_or_create_conference, get_or_create_division, get_team_id
+from .http_utils import get_with_retry
 
-        Returns the final `requests.Response` (may be non-200 if all retries exhausted).
-        """
-        sess = session or requests
-        for attempt in range(1, max_retries + 1):
-            print(f"get_with_retry: attempt {attempt}/{max_retries} GET {url}")
-            try:
-                resp = sess.get(url, timeout=timeout)
-            except requests.RequestException as e:
-                print(f"get_with_retry: request exception on attempt {attempt}: {e}")
-                if attempt == max_retries:
-                    print("get_with_retry: max retries reached, raising")
-                    raise
-                sleep = backoff_factor * (2 ** (attempt - 1))
-                print(f"get_with_retry: sleeping {sleep}s before retry")
-                time.sleep(sleep)
-                continue
+# database helper functions (moved to database/db_helpers.py):
+# - get_or_create_conference
+# - get_or_create_division
+# - get_team_id
+#
+# HTTP helper `get_with_retry` moved to database/http_utils.py
 
-            # Handle rate limit explicitly
-            if resp.status_code == 429:
-                retry_after = resp.headers.get("Retry-After")
-                try:
-                    wait = int(retry_after) if retry_after is not None else backoff_factor * (2 ** (attempt - 1))
-                except Exception:
-                    wait = backoff_factor * (2 ** (attempt - 1))
-                print(f"get_with_retry: 429 received, Retry-After={retry_after}, waiting {wait}s")
-                if attempt == max_retries:
-                    print("get_with_retry: max retries reached after 429, returning response")
-                    return resp
-                time.sleep(wait)
-                continue
-
-            # Retry on server errors
-            if 500 <= resp.status_code < 600 and attempt < max_retries:
-                sleep = backoff_factor * (2 ** (attempt - 1))
-                print(f"get_with_retry: server error {resp.status_code}, sleeping {sleep}s and retrying")
-                time.sleep(sleep)
-                continue
-
-            print(f"get_with_retry: success/terminal response status={resp.status_code}")
-            return resp
 
 # fetch seasons data from NHL API
 def get_seasons_from_api(base_url, season_endpoint="stats/rest/en/season", season_threshold=20052006):
@@ -248,31 +215,30 @@ def insert_team_seasons_into_db(conn, team_seasons):
     finally:
         cur.close()
 
-def get_players_from_api(conn, base_url):
+def get_players_from_api(conn, base_url, include_roster_info=False):
     """
-    Fetches all eligible players from an external API by first querying 
-    team-season combinations from the database.
+    Fetches players (and optional roster fields) from the external API by
+    querying team-season combinations from the database.
+
+    If `include_roster_info` is True, each returned player dict will include
+    roster-related fields: `team_season_id`, `jersey_number`, `position`,
+    `player_height_inches`, and `player_weight_pounds`.
     """
     print("Querying team-season combinations from the database.")
-    
-    season_team_pairs = []
-    # Use 'with' for automatic cursor management
+
     with conn.cursor() as cur:
-        # Correct SQL SELECT order to match unpacking order
         cur.execute("""
         SELECT teams.abbreviation, team_seasons.season_id, team_seasons.id
         FROM teams JOIN team_seasons on teams.id = team_seasons.team_id;
         """)
         season_team_pairs = cur.fetchall()
-        
+
     print(f"Processing {len(season_team_pairs)} team-season pairs to fetch players.")
 
     processed_players = []
-    
-    # Unpack variables in the correct order: abbreviation, season_id, team_season_id
+
     with requests.Session() as session:
         for abbreviation, season_id, team_season_id in season_team_pairs:
-
             url = f"{base_url}/v1/roster/{abbreviation}/{season_id}"
 
             try:
@@ -288,7 +254,6 @@ def get_players_from_api(conn, base_url):
                 print(f"Invalid JSON response for {abbreviation} in season {season_id}")
                 continue
 
-            # Safely combine player data, defaulting to empty list if keys are missing
             player_data = (
                 data.get("forwards", []) + 
                 data.get("defensemen", []) + 
@@ -298,8 +263,6 @@ def get_players_from_api(conn, base_url):
             print(f"Found {len(player_data)} players for {abbreviation} in season {season_id}.")
 
             for player in player_data:
-                # Use .get() for all fields to prevent KeyError if data is inconsistent
-                # Safely extract nested name fields which may be dicts or simple strings
                 first_name = player.get("firstName")
                 if isinstance(first_name, dict):
                     first_name = first_name.get("default")
@@ -307,19 +270,26 @@ def get_players_from_api(conn, base_url):
                 if isinstance(last_name, dict):
                     last_name = last_name.get("default")
 
-                processed_players.append({
+                entry = {
                     "player_id": player.get("id"),
                     "first_name": first_name,
                     "last_name": last_name,
                     "birthdate": player.get("birthDate"),
                     "country": player.get("birthCountry"),
                     "shoots_catches": player.get("shootsCatches"),
-                    "jersey_number": player.get("sweaterNumber"),
-                    "position": player.get("positionCode"),
-                    "player_height_inches": player.get("heightInInches"),
-                    "player_weight_pounds": player.get("weightInPounds"),
-                })
-            
+                }
+
+                if include_roster_info:
+                    entry.update({
+                        "team_season_id": team_season_id,
+                        "jersey_number": player.get("sweaterNumber"),
+                        "position": player.get("positionCode"),
+                        "player_height_inches": player.get("heightInInches"),
+                        "player_weight_pounds": player.get("weightInPounds"),
+                    })
+
+                processed_players.append(entry)
+
     return processed_players
 
 def insert_players_into_db(conn, players):
@@ -363,65 +333,8 @@ def insert_players_into_db(conn, players):
     finally:
         cur.close()
         
-def get_rosters_from_api(conn, base_url):
-    """Fetches rosters for all team-season combinations from the NHL API."""
-    print("Querying team-season combinations from the database.")
-    
-    print("Querying team-season combinations from the database.")
-    
-    season_team_pairs = []
-    # Use 'with' for automatic cursor management
-    with conn.cursor() as cur:
-        # Correct SQL SELECT order to match unpacking order
-        cur.execute("""
-        SELECT teams.abbreviation, team_seasons.season_id, team_seasons.id
-        FROM teams JOIN team_seasons on teams.id = team_seasons.team_id;
-        """)
-        season_team_pairs = cur.fetchall()
-        
-    print(f"Processing {len(season_team_pairs)} team-season pairs to fetch players.")
-    
-    processed_rosters = []
-    
-    # Unpack variables in the correct order: abbreviation, season_id, team_season_id
-    with requests.Session() as session:
-        for abbreviation, season_id, team_season_id in season_team_pairs:
-
-            url = f"{base_url}/v1/roster/{abbreviation}/{season_id}"
-
-            try:
-                response = get_with_retry(url, session=session, timeout=10)
-                response.raise_for_status()
-            except requests.exceptions.RequestException as e:
-                print(f"Error fetching roster for {abbreviation} in season {season_id}: {e}")
-                continue
-
-            try:
-                data = response.json()
-            except json.JSONDecodeError:
-                print(f"Invalid JSON response for {abbreviation} in season {season_id}")
-                continue
-
-            # Safely combine player data, defaulting to empty list if keys are missing
-            player_data = (
-                data.get("forwards", []) + 
-                data.get("defensemen", []) + 
-                data.get("goalies", [])
-            )
-
-            print(f"Found {len(player_data)} players for {abbreviation} in season {season_id}.")
-
-            for player in player_data:
-                processed_rosters.append({
-                    "team_season_id": team_season_id,
-                    "player_id": player.get("id"),
-                    "jersey_number": player.get("sweaterNumber"),
-                    "position": player.get("positionCode"),
-                    "player_height_inches": player.get("heightInInches"),
-                    "player_weight_pounds": player.get("weightInPounds"),
-                })
-
-    return processed_rosters
+# get_rosters_from_api was merged into get_players_from_api with
+# `include_roster_info=True`. Use that to obtain roster-related fields.
     
 def insert_rosters_into_db(conn, rosters):
     if not rosters:
@@ -462,9 +375,65 @@ def insert_rosters_into_db(conn, rosters):
         print(f"Database error during roster insertion: {e}")
     finally:
         cur.close()
-    
-    
-    
-    
         
+def get_standings_from_api(conn, base_url, standings_endpoint="v1/standings/"):
+    """Fetch standings data from the NHL API."""
+    url = f"{base_url}/{standings_endpoint}"
+    
+    standings = []
+    
+    cur = conn.cursor()
+    cur.execute("SELECT regular_season_end_date, id AS season_id FROM seasons;")
+    # Fetch all rows
+    rows = cur.fetchall()
+
+    current_date = datetime.now().date()
+    
+    # Prepare regular season end dates (adjust logic to use 'now' if end date is after today)
+    regular_season_end_dates = []
+    
+    for row in rows:
+        season_end_date = row[0]  # regular_season_end_date is already a date object
+        season_id = row[1]
+        
+        # Use current date if season end date is after today
+        if season_end_date > current_date:
+            season_end_date = current_date
+        
+        regular_season_end_dates.append((season_end_date.strftime('%Y-%m-%d'), season_id))
+        
+    print(regular_season_end_dates)
+
+    for date, season_id in regular_season_end_dates:
+        seasonUrl = f"{url}{date}"
+        response = requests.get(seasonUrl)
+
+        if response.status_code == 200:
+            data = response.json()
+            standingsData = data.get("standings", [])
+
+            for team in standingsData:
+                wins = team["wins"]
+                losses = team["losses"]
+                ot = team["otLosses"]
+                points = team["points"]
+                division_name = team["divisionName"]
+                conference_name = team.get("conferenceName")
+                abbreviation = team["teamAbbrev"]["default"]
+
+                print(f"Season {season_id}: Conference = {conference_name}")
+                
+                standings.append({
+                    "season_id": season_id,
+                    "conference_name": conference_name,
+                    "division_name": division_name,
+                    "team_abbreviation": abbreviation,
+                    "wins": wins,
+                    "losses": losses,
+                    "ot": ot,
+                    "points": points
+                })
+
+    return standings
+
         
