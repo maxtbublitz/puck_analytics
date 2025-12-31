@@ -16,7 +16,10 @@ from database.crud import (
     get_players_from_api,
     insert_players_into_db,
     insert_rosters_into_db,
-    get_standings_from_api
+    get_standings_from_api,
+    insert_standings_into_db,
+    get_player_stats_from_api,
+    insert_player_stats_into_db
 )
 
 def update_seasons(conn, base_url):
@@ -101,11 +104,23 @@ def update_standings(conn, base_url):
     try:
         standings_data = get_standings_from_api(conn, base_url)
         print(f"API fetched {len(standings_data)} eligible standing records.")
+        insert_standings_into_db(conn, standings_data)
         return True
     except Exception as e:
         print(f"❌ Error updating standings: {e}")
         return False
-        
+    
+def update_player_stats(conn, base_url):
+    """Fetches and processes player stats data from the API."""
+    try:
+        player_stats_data = get_player_stats_from_api(conn, base_url)
+        print(f"API fetched stats for {len(player_stats_data)} players.")
+        insert_player_stats_into_db(conn, player_stats_data)
+        return True
+    except Exception as e:
+        print(f"❌ Error updating player stats: {e}")
+        return False
+
 def run_update_sequence(target=None):
     """
     Manages connection/cleanup and runs selected data updates.
@@ -130,6 +145,7 @@ def run_update_sequence(target=None):
         'players': update_players,
         'rosters': update_rosters,
         'standings': update_standings,
+        'player_stats': update_player_stats
     }
     
 
@@ -145,6 +161,7 @@ def run_update_sequence(target=None):
             update_team_seasons(conn, base_url_2)
             update_players(conn, base_url_2)
             update_rosters(conn, base_url_2)
+            update_player_stats(conn, base_url_2)
         else:
             print(f"🛑 Error: Unknown update target '{target}'. Must be one of: {list(update_map.keys())} or left blank.")
 

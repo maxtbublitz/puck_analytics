@@ -2,18 +2,13 @@ import requests
 import json
 import time
 import psycopg2
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from .db_helpers import get_or_create_conference, get_or_create_division, get_team_id
+from .db_helpers import get_or_create_conference, get_or_create_division, get_team_id, get_team_season_id_from_team_name
 from .http_utils import get_with_retry
 
 # database helper functions (moved to database/db_helpers.py):
-# - get_or_create_conference
-# - get_or_create_division
-# - get_team_id
-#
 # HTTP helper `get_with_retry` moved to database/http_utils.py
-
 
 # fetch seasons data from NHL API
 def get_seasons_from_api(base_url, season_endpoint="stats/rest/en/season", season_threshold=20052006):
@@ -401,8 +396,6 @@ def get_standings_from_api(conn, base_url, standings_endpoint="v1/standings/"):
             season_end_date = current_date
         
         regular_season_end_dates.append((season_end_date.strftime('%Y-%m-%d'), season_id))
-        
-    print(regular_season_end_dates)
 
     for date, season_id in regular_season_end_dates:
         seasonUrl = f"{url}{date}"
@@ -420,8 +413,6 @@ def get_standings_from_api(conn, base_url, standings_endpoint="v1/standings/"):
                 division_name = team["divisionName"]
                 conference_name = team.get("conferenceName")
                 abbreviation = team["teamAbbrev"]["default"]
-
-                print(f"Season {season_id}: Conference = {conference_name}")
                 
                 standings.append({
                     "season_id": season_id,
@@ -436,4 +427,178 @@ def get_standings_from_api(conn, base_url, standings_endpoint="v1/standings/"):
 
     return standings
 
+def insert_standings_into_db(conn, standings):
+    """Inserts a list of standings records into the 'standings' table."""
+    if not standings:
+        print("No standings data to insert.")
+        return
+
+    cur = conn.cursor()
+    print(f"Attempting to insert {len(standings)} standings records...")
+
+    try:
+        for standing in standings:
+            print(f"Processing team {standing['team_abbreviation']} for season {standing['season_id']}")
+            season_id = standing["season_id"]
+            wins = int(standing["wins"])
+            losses = int(standing["losses"])
+            ot = int(standing["ot"])
+            points = int(standing["points"])    
+            division_name = standing["division_name"]
+            conference_name = standing.get("conference_name")
+            abbreviation = standing["team_abbreviation"]
+
+            print(f"Season {season_id}: Conference = {conference_name}")
+
+            # add the conference in to the conferences table if it does not yet exist
+            # add the division to the divisions table if it does not yet exist
+            # add wins, losses, points, ot, and division to the correct team in the team_seasons table
+            if conference_name:
+                conference_id = get_or_create_conference(cur, conference_name, season_id)
+            else:
+                conference_id = None  # For seasons like 2020–21
+
+            division_id = get_or_create_division(cur, division_name, conference_id, season_id)
+            team_id = get_team_id(cur, abbreviation)
+
+            if team_id:
+                cur.execute("""
+                    INSERT INTO team_seasons (team_id, season_id, wins, losses, ot, points, division_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (team_id, season_id) DO UPDATE
+                    SET wins = EXCLUDED.wins,
+                        losses = EXCLUDED.losses,
+                        ot = EXCLUDED.ot,
+                        points = EXCLUDED.points,
+                        division_id = EXCLUDED.division_id
+                """, (team_id, season_id, wins, losses, ot, points, division_id))
+            else:
+                print(f"Team not found for abbreviation: {abbreviation}")
+
+
+        # Commit the transaction once after all inserts/updates
+        conn.commit()
+        print("Standings insertion complete and committed.")
+
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Database error during standings insertion: {e}")
+    finally:
+        cur.close()      
         
+
+def get_player_stats_from_api(conn, base_url):
+    cur = conn.cursor()
+    
+    cur.execute("SELECT MIN(id) FROM seasons")
+    season_limit = cur.fetchone()[0]
+    
+    cur.execute("SELECT id FROM players")
+    player_ids = [row[0] for row in cur.fetchall()] # Changed name to avoid conflict
+    
+    player_count = 0
+    all_stats_to_return = [] # New list for results
+    
+    for player in player_ids:
+        url = f"{base_url}/v1/player/{player}/landing"
+        response = get_with_retry(url)
+        
+        if response.status_code != 200:
+            print(f"Failed request for player {player}")
+            continue
+            
+        data = response.json()
+        # Extract position from the landing data
+        position = data.get("position") 
+        season_stats = data.get("seasonTotals", [])
+        
+        for season in season_stats:
+            # Assign early so it's always available
+            season_type = int(season.get("gameTypeId", 0)) 
+            
+            # Check conditions
+            if (season.get("leagueAbbrev") == "NHL" and 
+                season.get("season") >= season_limit and 
+                season_type != 1 and 
+                position != "G"):
+                
+                team_name = season["teamName"]["default"]
+                season_id = season["season"]
+                team_seasons = get_team_season_id_from_team_name(cur, team_name, season_id)
+
+                # Parse Time On Ice
+                avg_toi_str = season.get("avgToi", "0:00")
+                minutes, seconds = map(int, avg_toi_str.split(":"))
+                average_toi = timedelta(minutes=minutes, seconds=seconds)
+
+                if team_seasons:
+                    player_count += 1
+                    team_id = team_seasons[0][0]
+                    
+                    all_stats_to_return.append({
+                        "player_id": player,
+                        "team_id": team_id,
+                        "goals": season.get("goals", 0),
+                        "assists": season.get("assists", 0),
+                        "points": season.get("points", 0),
+                        "plus_minus": season.get("plusMinus", 0),
+                        "average_toi": average_toi,
+                        "pim": season.get("pim", 0),
+                        "games_played": season.get("gamesPlayed", 0),
+                        "season_type": season_type
+                    })
+                        
+    return all_stats_to_return
+
+def insert_player_stats_into_db(conn, player_stats_data):
+    # 1. Create the cursor once
+    cur = conn.cursor()
+    
+    try:
+        for stats in player_stats_data:
+            # 2. Extract values (Ensure keys match the previous function)
+            player_id = stats["player_id"]
+            team_id = stats["team_id"]  # Match the key used in 'get_player_stats_from_api'
+            goals = stats["goals"]
+            assists = stats["assists"]
+            points = stats["points"]
+            plus_minus = stats["plus_minus"]
+            average_toi = stats["average_toi"]
+            pim = stats["pim"]
+            games_played = stats["games_played"]
+            season_type = stats["season_type"]
+
+            # 3. Determine table INSIDE the loop
+            if season_type == 2:
+                table = "player_stats"
+            else:
+                table = "player_stats_playoffs"
+
+            # 4. Execute the query
+            cur.execute(f"""
+                INSERT INTO {table} (
+                    player_id, team_season_id, goals, assists, points, plus_minus, average_toi, pim, games_played
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (player_id, team_season_id) DO UPDATE SET
+                    goals = EXCLUDED.goals,
+                    assists = EXCLUDED.assists,
+                    points = EXCLUDED.points,
+                    plus_minus = EXCLUDED.plus_minus,
+                    average_toi = EXCLUDED.average_toi,
+                    pim = EXCLUDED.pim,
+                    games_played = EXCLUDED.games_played;
+            """, (player_id, team_id, goals, assists, points, plus_minus, average_toi, pim, games_played))
+            
+        # 5. Commit all changes after the loop finishes successfully
+        conn.commit()
+        print(f"Successfully updated {len(player_stats_data)} records.")
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Database error: {e}")
+        raise e # Re-raise so the caller's try/except can see it
+    finally:
+        cur.close()
+    
+    

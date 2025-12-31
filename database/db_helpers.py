@@ -7,6 +7,7 @@ from typing import Optional
 
 
 def get_or_create_conference(cur, name: str, season_id: int) -> int:
+    print(f"Getting or creating conference: {name} for season_id: {season_id}")
     cur.execute(
         """
         SELECT id FROM conferences WHERE name = %s AND season_id = %s
@@ -28,6 +29,7 @@ def get_or_create_conference(cur, name: str, season_id: int) -> int:
 
 
 def get_or_create_division(cur, name: str, conference_id: Optional[int], season_id: int) -> int:
+    print(f"Getting or creating conference: {name} for season_id: {season_id}")
     if conference_id:
         cur.execute(
             """
@@ -60,10 +62,10 @@ def get_or_create_division(cur, name: str, conference_id: Optional[int], season_
         cur.execute(
             """
             INSERT INTO divisions (name, conference_id, season_id)
-            VALUES (%s, NULL)
+            VALUES (%s, NULL, %s)
             RETURNING id
             """,
-            (name,),
+            (name, season_id),
         )
 
     return cur.fetchone()[0]
@@ -73,3 +75,12 @@ def get_team_id(cur, abbreviation: str):
     cur.execute("SELECT id FROM teams WHERE abbreviation = %s", (abbreviation,))
     result = cur.fetchone()
     return result[0] if result else None
+
+def get_team_season_id_from_team_name(cur, team_name, season_id):
+    cur.execute("""
+        SELECT ts.id, ts.team_id, ts.season_id, t.name
+        FROM team_seasons ts
+        JOIN teams t ON ts.team_id = t.id
+        WHERE t.name = %s AND ts.season_id = %s
+    """,(team_name, season_id))
+    return cur.fetchall()
