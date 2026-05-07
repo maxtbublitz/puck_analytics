@@ -19,7 +19,9 @@ from database.crud import (
     get_standings_from_api,
     insert_standings_into_db,
     get_player_stats_from_api,
-    insert_player_stats_into_db
+    insert_player_stats_into_db,
+    get_playoff_data_from_api,
+    insert_playoff_data_into_db
 )
 
 def update_seasons(conn, base_url):
@@ -120,6 +122,18 @@ def update_player_stats(conn, base_url):
     except Exception as e:
         print(f"❌ Error updating player stats: {e}")
         return False
+    
+def update_playoff_data(conn, base_url, season_range=(20242025, 20252025)):
+    """Fetches and processes playoff data from the API."""
+    try:
+        print("\n--- Starting Playoff Data Update ---")
+        playoff_data = get_playoff_data_from_api(conn, base_url, season_range)
+        print(f"API fetched playoff data for {len(playoff_data)} seasons.")
+        insert_playoff_data_into_db(conn, playoff_data)
+        return True
+    except Exception as e:
+        print(f"❌ Error updating playoff data: {e}")
+        return False
 
 def run_update_sequence(target=None):
     """
@@ -129,39 +143,40 @@ def run_update_sequence(target=None):
     
     print(f"Starting update process. Target: {target if target else 'ALL'}")
     load_dotenv()
-    base_url = os.getenv("NHL_API_URL_2")
-    base_url_2 = os.getenv("NHL_API_URL")
-    
+    stats_url = os.getenv("NHL_API_URL_2")  # https://api.nhle.com  — stats/rest endpoints
+    web_url = os.getenv("NHL_API_URL")      # https://api-web.nhle.com — v1 endpoints
+
     conn = get_db_connection()
     if conn is None:
         return
 
-    # A mapping of possible command arguments to their respective functions
-    # These names are now defined above.
+    # Each entry maps a target name to (function, url) so targeted runs use the right base URL.
     update_map = {
-        'seasons': update_seasons,
-        'teams': update_teams,
-        'team_seasons': update_team_seasons,
-        'players': update_players,
-        'rosters': update_rosters,
-        'standings': update_standings,
-        'player_stats': update_player_stats
+        'seasons':      (update_seasons,      stats_url),
+        'teams':        (update_teams,        stats_url),
+        'team_seasons': (update_team_seasons, web_url),
+        'players':      (update_players,      web_url),
+        'rosters':      (update_rosters,      web_url),
+        'standings':    (update_standings,    web_url),
+        'player_stats': (update_player_stats, web_url),
+        'playoff_data': (update_playoff_data, web_url),
     }
-    
 
     try:
         if target and target in update_map:
-            # Run only the specified function
-            update_map[target](conn, base_url_2)
+            fn, url = update_map[target]
+            fn(conn, url)
         elif target is None:
             # Run ALL functions sequentially (default behavior)
             print("No specific target provided. Running full update sequence.")
-            update_seasons(conn, base_url)
-            update_teams(conn, base_url)
-            update_team_seasons(conn, base_url_2)
-            update_players(conn, base_url_2)
-            update_rosters(conn, base_url_2)
-            update_player_stats(conn, base_url_2)
+            update_seasons(conn, stats_url)
+            update_teams(conn, stats_url)
+            update_team_seasons(conn, web_url)
+            update_players(conn, web_url)
+            update_rosters(conn, web_url)
+            update_standings(conn, web_url)
+            update_player_stats(conn, web_url)
+            update_playoff_data(conn, web_url)
         else:
             print(f"🛑 Error: Unknown update target '{target}'. Must be one of: {list(update_map.keys())} or left blank.")
 

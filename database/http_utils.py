@@ -6,7 +6,7 @@ import requests
 import time
 
 
-def get_with_retry(url, session=None, max_retries=5, backoff_factor=1, timeout=10):
+def get_with_retry(url, session=None, max_retries=5, backoff_factor=1, timeout=(5, 30)):
     """Simple GET with exponential backoff and Retry-After handling.
 
     Returns the final `requests.Response` (may be non-200 if all retries exhausted).
