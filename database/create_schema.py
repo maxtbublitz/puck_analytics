@@ -66,7 +66,8 @@ def create_schema(conn):
                 last_name      TEXT,
                 birthdate      DATE,
                 country        TEXT,
-                shoots_catches TEXT
+                shoots_catches TEXT,
+                ameture_league TEXT
             )
         """)
 

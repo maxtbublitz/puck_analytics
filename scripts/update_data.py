@@ -21,7 +21,9 @@ from database.crud import (
     get_player_stats_from_api,
     insert_player_stats_into_db,
     get_playoff_data_from_api,
-    insert_playoff_data_into_db
+    insert_playoff_data_into_db,
+    get_amateur_league_from_api,
+    insert_amateur_league_into_db
 )
 
 def update_seasons(conn, base_url):
@@ -135,6 +137,18 @@ def update_playoff_data(conn, base_url, season_range=(20242025, 20252025)):
         print(f"❌ Error updating playoff data: {e}")
         return False
 
+def update_amateur_league(conn, base_url):
+    """Fetches each player's amateur league from the API and updates the players table."""
+    try:
+        print("\n--- Starting Amateur League Update ---")
+        data = get_amateur_league_from_api(conn, base_url)
+        print(f"API found amateur league data for {len(data)} players.")
+        insert_amateur_league_into_db(conn, data)
+        return True
+    except Exception as e:
+        print(f"❌ Error updating amateur leagues: {e}")
+        return False
+
 def run_update_sequence(target=None):
     """
     Manages connection/cleanup and runs selected data updates.
@@ -159,7 +173,8 @@ def run_update_sequence(target=None):
         'rosters':      (update_rosters,      web_url),
         'standings':    (update_standings,    web_url),
         'player_stats': (update_player_stats, web_url),
-        'playoff_data': (update_playoff_data, web_url),
+        'playoff_data':    (update_playoff_data,    web_url),
+        'amateur_league':  (update_amateur_league,  web_url),
     }
 
     try:
@@ -177,6 +192,7 @@ def run_update_sequence(target=None):
             update_standings(conn, web_url)
             update_player_stats(conn, web_url)
             update_playoff_data(conn, web_url)
+            update_amateur_league(conn, web_url)
         else:
             print(f"🛑 Error: Unknown update target '{target}'. Must be one of: {list(update_map.keys())} or left blank.")
 

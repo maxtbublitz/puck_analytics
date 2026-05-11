@@ -666,6 +666,69 @@ def get_playoff_data_from_api(conn, base_url, season_range=(20052006, 20252026))
 
     return playoff_data
                 
+AMATEUR_LEAGUE_IGNORE = {
+    "WC-A", "WJC-A", "Olympics", "ECHL", "M-Cup", "International",
+    "WCup", "4 Nations", "WJC-20", "WJC-18", "WJC-B", "WC", "Nat-Tm",
+    "Hlinka Gretzky Cup", "Ivan Hlinka Memorial", "WJC-20 D1A"
+}
+
+def get_amateur_league_from_api(conn, base_url):
+    """For each player, find the last non-ignored league before their first NHL/AHL season."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM players")
+        player_ids = [row[0] for row in cur.fetchall()]
+    finally:
+        cur.close()
+
+    results = []
+    with requests.Session() as session:
+        for player_id in player_ids:
+            url = f"{base_url}/v1/player/{player_id}/landing"
+            response = get_with_retry(url, session=session)
+
+            if response.status_code != 200:
+                print(f"Failed request for player {player_id}")
+                continue
+
+            season_stats = response.json().get("seasonTotals", [])
+            previous_team = None
+            for season in season_stats:
+                league = season.get("leagueAbbrev", "")
+                if league in ("NHL", "AHL"):
+                    if previous_team:
+                        results.append({"player_id": player_id, "amateur_league": previous_team})
+                    break
+                if league not in AMATEUR_LEAGUE_IGNORE:
+                    previous_team = league
+
+    return results
+
+def insert_amateur_league_into_db(conn, amateur_league_data):
+    if not amateur_league_data:
+        print("No amateur league data to insert.")
+        return
+
+    cur = conn.cursor()
+    print(f"Attempting to update amateur league for {len(amateur_league_data)} players...")
+
+    try:
+        for record in amateur_league_data:
+            cur.execute("""
+                UPDATE players
+                SET ameture_league = %s
+                WHERE id = %s
+            """, (record["amateur_league"], record["player_id"]))
+            print(f"Updated player {record['player_id']} amateur league: {record['amateur_league']}")
+
+        conn.commit()
+        print("Amateur league update complete and committed.")
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Database error during amateur league update: {e}")
+    finally:
+        cur.close()
+
 def insert_playoff_data_into_db(conn, playoff_data):
     if not playoff_data:
         print("No playoff data to insert.")
