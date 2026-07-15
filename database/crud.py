@@ -71,7 +71,7 @@ def insert_seasons_into_db(conn, seasons):
             ))
             print(f"Inserted/Updated season {season['id']}")
 
-            conn.commit()
+        conn.commit()
     except psycopg2.Error as e:
         conn.rollback()
         print(f"Database error: {e}")
@@ -96,6 +96,9 @@ def get_teams_from_api(base_url, teams_endpoint="stats/rest/en/team"):
 
     processed_teams = []
     for team in teams_data:
+        if team.get("franchiseId") is None:
+            print(f"Skipping placeholder team: {team.get('fullName')} ({team.get('triCode')})")
+            continue
         processed_teams.append({
             "id": team["id"],
             "franchise_id": team["franchiseId"],
@@ -210,7 +213,7 @@ def insert_team_seasons_into_db(conn, team_seasons):
     finally:
         cur.close()
 
-def get_players_from_api(conn, base_url, include_roster_info=False):
+def get_players_from_api(conn, base_url, include_roster_info=False, filter_season_id=None):
     """
     Fetches players (and optional roster fields) from the external API by
     querying team-season combinations from the database.
@@ -218,14 +221,23 @@ def get_players_from_api(conn, base_url, include_roster_info=False):
     If `include_roster_info` is True, each returned player dict will include
     roster-related fields: `team_season_id`, `jersey_number`, `position`,
     `player_height_inches`, and `player_weight_pounds`.
+
+    If `filter_season_id` is provided, only team-seasons for that season are fetched.
     """
     print("Querying team-season combinations from the database.")
 
     with conn.cursor() as cur:
-        cur.execute("""
-        SELECT teams.abbreviation, team_seasons.season_id, team_seasons.id
-        FROM teams JOIN team_seasons on teams.id = team_seasons.team_id;
-        """)
+        if filter_season_id is not None:
+            cur.execute("""
+                SELECT teams.abbreviation, team_seasons.season_id, team_seasons.id
+                FROM teams JOIN team_seasons ON teams.id = team_seasons.team_id
+                WHERE team_seasons.season_id = %s;
+            """, (filter_season_id,))
+        else:
+            cur.execute("""
+                SELECT teams.abbreviation, team_seasons.season_id, team_seasons.id
+                FROM teams JOIN team_seasons ON teams.id = team_seasons.team_id;
+            """)
         season_team_pairs = cur.fetchall()
 
     print(f"Processing {len(season_team_pairs)} team-season pairs to fetch players.")
@@ -292,6 +304,8 @@ def insert_players_into_db(conn, players):
     if not players:
         print("No player data to insert.")
         return
+
+    players = list({p["player_id"]: p for p in players}.values())
 
     cur = conn.cursor()
     print(f"Attempting to insert {len(players)} player records...")
@@ -399,7 +413,7 @@ def get_standings_from_api(conn, base_url, standings_endpoint="v1/standings/"):
 
     for date, season_id in regular_season_end_dates:
         seasonUrl = f"{url}{date}"
-        response = requests.get(seasonUrl)
+        response = get_with_retry(seasonUrl)
 
         if response.status_code == 200:
             data = response.json()
@@ -489,65 +503,70 @@ def insert_standings_into_db(conn, standings):
 
 def get_player_stats_from_api(conn, base_url):
     cur = conn.cursor()
-    
-    cur.execute("SELECT MIN(id) FROM seasons")
-    season_limit = cur.fetchone()[0]
-    
-    cur.execute("SELECT id FROM players")
-    player_ids = [row[0] for row in cur.fetchall()] # Changed name to avoid conflict
-    
+
+    try:
+        cur.execute("SELECT MIN(id) FROM seasons")
+        season_limit = cur.fetchone()[0]
+
+        cur.execute("SELECT id FROM players")
+        player_ids = [row[0] for row in cur.fetchall()]
+
+        cur.execute("""
+            SELECT ts.id, t.name, ts.season_id
+            FROM team_seasons ts
+            JOIN teams t ON ts.team_id = t.id
+        """)
+        team_season_map = {(row[1], row[2]): row[0] for row in cur.fetchall()}
+    finally:
+        cur.close()
+
     player_count = 0
-    all_stats_to_return = [] # New list for results
-    
-    for player in player_ids:
-        url = f"{base_url}/v1/player/{player}/landing"
-        response = get_with_retry(url)
-        
-        if response.status_code != 200:
-            print(f"Failed request for player {player}")
-            continue
-            
-        data = response.json()
-        # Extract position from the landing data
-        position = data.get("position") 
-        season_stats = data.get("seasonTotals", [])
-        
-        for season in season_stats:
-            # Assign early so it's always available
-            season_type = int(season.get("gameTypeId", 0)) 
-            
-            # Check conditions
-            if (season.get("leagueAbbrev") == "NHL" and 
-                season.get("season") >= season_limit and 
-                season_type != 1 and 
-                position != "G"):
-                
-                team_name = season["teamName"]["default"]
-                season_id = season["season"]
-                team_seasons = get_team_season_id_from_team_name(cur, team_name, season_id)
+    all_stats_to_return = []
 
-                # Parse Time On Ice
-                avg_toi_str = season.get("avgToi", "0:00")
-                minutes, seconds = map(int, avg_toi_str.split(":"))
-                average_toi = timedelta(minutes=minutes, seconds=seconds)
+    with requests.Session() as session:
+        for player in player_ids:
+            url = f"{base_url}/v1/player/{player}/landing"
+            response = get_with_retry(url, session=session)
 
-                if team_seasons:
-                    player_count += 1
-                    team_id = team_seasons[0][0]
-                    
-                    all_stats_to_return.append({
-                        "player_id": player,
-                        "team_id": team_id,
-                        "goals": season.get("goals", 0),
-                        "assists": season.get("assists", 0),
-                        "points": season.get("points", 0),
-                        "plus_minus": season.get("plusMinus", 0),
-                        "average_toi": average_toi,
-                        "pim": season.get("pim", 0),
-                        "games_played": season.get("gamesPlayed", 0),
-                        "season_type": season_type
-                    })
-                        
+            if response.status_code != 200:
+                print(f"Failed request for player {player}")
+                continue
+
+            data = response.json()
+            position = data.get("position")
+            season_stats = data.get("seasonTotals", [])
+
+            for season in season_stats:
+                season_type = int(season.get("gameTypeId", 0))
+
+                if (season.get("leagueAbbrev") == "NHL" and
+                    season.get("season") >= season_limit and
+                    season_type != 1 and
+                    position != "G"):
+
+                    team_name = season["teamName"]["default"]
+                    season_id = season["season"]
+                    team_id = team_season_map.get((team_name, season_id))
+
+                    avg_toi_str = season.get("avgToi", "0:00")
+                    minutes, seconds = map(int, avg_toi_str.split(":"))
+                    average_toi = timedelta(minutes=minutes, seconds=seconds)
+
+                    if team_id:
+                        player_count += 1
+                        all_stats_to_return.append({
+                            "player_id": player,
+                            "team_id": team_id,
+                            "goals": season.get("goals", 0),
+                            "assists": season.get("assists", 0),
+                            "points": season.get("points", 0),
+                            "plus_minus": season.get("plusMinus", 0),
+                            "average_toi": average_toi,
+                            "pim": season.get("pim", 0),
+                            "games_played": season.get("gamesPlayed", 0),
+                            "season_type": season_type
+                        })
+
     return all_stats_to_return
 
 def insert_player_stats_into_db(conn, player_stats_data):
@@ -600,5 +619,437 @@ def insert_player_stats_into_db(conn, player_stats_data):
         raise e # Re-raise so the caller's try/except can see it
     finally:
         cur.close()
+        
+def get_playoff_data_from_api(conn, base_url, season_range=(20052006, 20252026)):
+    cur = conn.cursor()
+
+    try:
+        cur.execute("SELECT id FROM seasons WHERE id BETWEEN %s AND %s", (season_range[0], season_range[1]))
+        season_ids = [s[0] for s in cur.fetchall()]
+
+        cur.execute("""
+            SELECT ts.id, t.id, ts.season_id
+            FROM team_seasons ts
+            JOIN teams t ON ts.team_id = t.id
+        """)
+        team_season_map = {(row[1], row[2]): row[0] for row in cur.fetchall()}
+    finally:
+        cur.close()
+
+    series_data = []
+
+    with requests.Session() as session:
+        for season in season_ids:
+            last_four_digits_of_season = str(season)[-4:]
+            url = f"{base_url}/v1/playoff-bracket/{last_four_digits_of_season}"
+            response = get_with_retry(url, session=session)
+
+            if response.status_code != 200:
+                print(f"Failed request for playoffs in season {season}")
+                continue
+
+            data = response.json()
+            for series in data["series"]:
+                top_team_id = series["topSeedTeam"]["id"]
+                bottom_team_id = series["bottomSeedTeam"]["id"]
+                top_seed_id = team_season_map.get((top_team_id, season))
+                bottom_seed_id = team_season_map.get((bottom_team_id, season))
+
+                if not top_seed_id or not bottom_seed_id:
+                    print(
+                        f"Could not find team_season_id for series {series['seriesLetter']} in season {season} "
+                        f"(top: {series['topSeedTeam']['name']['default']} id={top_team_id}, "
+                        f"bottom: {series['bottomSeedTeam']['name']['default']} id={bottom_team_id})"
+                    )
+                    continue
+
+                series_data.append({
+                    "season_id": season,
+                    "series_letter": series["seriesLetter"],
+                    "round": series["playoffRound"],
+                    "home_team_season_id": top_seed_id,
+                    "away_team_season_id": bottom_seed_id,
+                    "home_team_games_won": series["topSeedWins"],
+                    "away_team_games_won": series["bottomSeedWins"]
+                })
+
+    return series_data
+                
+AMATEUR_LEAGUE_IGNORE = {
+    "WC-A", "WJC-A", "Olympics", "ECHL", "M-Cup", "International",
+    "WCup", "4 Nations", "WJC-20", "WJC-18", "WJC-B", "WC", "Nat-Tm",
+    "Hlinka Gretzky Cup", "Ivan Hlinka Memorial", "WJC-20 D1A"
+}
+
+def get_amateur_league_from_api(conn, base_url):
+    """For each player, find the last non-ignored league before their first NHL/AHL season."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM players")
+        player_ids = [row[0] for row in cur.fetchall()]
+    finally:
+        cur.close()
+
+    results = []
+    with requests.Session() as session:
+        for player_id in player_ids:
+            url = f"{base_url}/v1/player/{player_id}/landing"
+            response = get_with_retry(url, session=session)
+
+            if response.status_code != 200:
+                print(f"Failed request for player {player_id}")
+                continue
+
+            season_stats = response.json().get("seasonTotals", [])
+            previous_team = None
+            for season in season_stats:
+                league = season.get("leagueAbbrev", "")
+                if league in ("NHL", "AHL"):
+                    if previous_team:
+                        results.append({"player_id": player_id, "amateur_league": previous_team})
+                    break
+                if league not in AMATEUR_LEAGUE_IGNORE:
+                    previous_team = league
+
+    return results
+
+def insert_amateur_league_into_db(conn, amateur_league_data):
+    if not amateur_league_data:
+        print("No amateur league data to insert.")
+        return
+
+    cur = conn.cursor()
+    print(f"Attempting to update amateur league for {len(amateur_league_data)} players...")
+
+    try:
+        for record in amateur_league_data:
+            cur.execute("""
+                UPDATE players
+                SET amateur_league = %s
+                WHERE id = %s
+            """, (record["amateur_league"], record["player_id"]))
+            print(f"Updated player {record['player_id']} amateur league: {record['amateur_league']}")
+
+        conn.commit()
+        print("Amateur league update complete and committed.")
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Database error during amateur league update: {e}")
+    finally:
+        cur.close()
+
+def fill_roster_attributes_from_other_seasons(conn, season_id=None):
+    """
+    For roster rows with NULL height, weight, or jersey number, copies the most
+    recent non-NULL value for that player from any other season in the database.
+    Pass season_id to limit updates to a single season; omit to fix all seasons.
+    """
+    season_filter = """
+        AND r.team_season_id IN (
+            SELECT id FROM team_seasons WHERE season_id = %(season_id)s
+        )
+    """ if season_id is not None else ""
+
+    sql = f"""
+        UPDATE rosters r
+        SET
+            player_height_inches = COALESCE(r.player_height_inches, (
+                SELECT r2.player_height_inches FROM rosters r2
+                WHERE r2.player_id = r.player_id
+                  AND r2.player_height_inches IS NOT NULL
+                ORDER BY r2.team_season_id DESC LIMIT 1
+            )),
+            player_weight_pounds = COALESCE(r.player_weight_pounds, (
+                SELECT r2.player_weight_pounds FROM rosters r2
+                WHERE r2.player_id = r.player_id
+                  AND r2.player_weight_pounds IS NOT NULL
+                ORDER BY r2.team_season_id DESC LIMIT 1
+            )),
+            jersey_number = COALESCE(r.jersey_number, (
+                SELECT r2.jersey_number FROM rosters r2
+                WHERE r2.player_id = r.player_id
+                  AND r2.jersey_number IS NOT NULL
+                ORDER BY r2.team_season_id DESC LIMIT 1
+            ))
+        WHERE (
+            r.player_height_inches IS NULL OR
+            r.player_weight_pounds IS NULL OR
+            r.jersey_number IS NULL
+        )
+        {season_filter}
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(sql, {"season_id": season_id})
+        updated = cur.rowcount
+
+    conn.commit()
+    scope = f"season {season_id}" if season_id else "all seasons"
+    print(f"Filled attributes for {updated} roster rows ({scope}) from other seasons.")
+
+
+def backfill_rosters_from_stats_api(conn, base_url_stats, min_players=22, season_id=None):
+    """
+    For team-seasons with fewer than min_players in rosters, supplements
+    from the stats API skater summary (based on actual game appearances).
+    Physical attributes are left NULL for backfilled rows.
+    """
+    with conn.cursor() as cur:
+        if season_id is not None:
+            cur.execute("""
+                SELECT ts.id, t.id, ts.season_id
+                FROM team_seasons ts
+                JOIN teams t ON ts.team_id = t.id
+                WHERE ts.season_id = %s
+                  AND (
+                    SELECT COUNT(*) FROM rosters r WHERE r.team_season_id = ts.id
+                  ) < %s
+            """, (season_id, min_players))
+        else:
+            cur.execute("""
+                SELECT ts.id, t.id, ts.season_id
+                FROM team_seasons ts
+                JOIN teams t ON ts.team_id = t.id
+                WHERE (
+                    SELECT COUNT(*) FROM rosters r WHERE r.team_season_id = ts.id
+                ) < %s
+            """, (min_players,))
+        sparse = cur.fetchall()
+
+    if not sparse:
+        print("No sparse team-seasons found, skipping roster backfill.")
+        return
+
+    print(f"Backfilling rosters for {len(sparse)} sparse team-seasons...")
+
+    with requests.Session() as session:
+        for team_season_id, team_id, season_id in sparse:
+            url = (
+                f"{base_url_stats}/stats/rest/en/skater/summary"
+                f"?limit=-1&cayenneExp=seasonId={season_id} and teamId={team_id} and gameTypeId=2"
+            )
+            try:
+                response = get_with_retry(url, session=session)
+                response.raise_for_status()
+            except requests.RequestException as e:
+                print(f"Error fetching stats for team {team_id} season {season_id}: {e}")
+                continue
+
+            skaters = response.json().get("data", [])
+            if not skaters:
+                continue
+
+            print(f"  team {team_id} season {season_id}: found {len(skaters)} skaters via stats API")
+
+            with conn.cursor() as cur:
+                for skater in skaters:
+                    player_id = skater.get("playerId")
+                    if not player_id:
+                        continue
+
+                    cur.execute("SELECT 1 FROM players WHERE id = %s", (player_id,))
+                    if not cur.fetchone():
+                        full_name = skater.get("skaterFullName", "")
+                        parts = full_name.split(" ", 1)
+                        first_name = parts[0] if parts else None
+                        last_name = parts[1] if len(parts) > 1 else None
+                        cur.execute("""
+                            INSERT INTO players (id, first_name, last_name)
+                            VALUES (%s, %s, %s)
+                            ON CONFLICT (id) DO NOTHING
+                        """, (player_id, first_name, last_name))
+
+                    cur.execute("""
+                        INSERT INTO rosters (
+                            team_season_id, player_id, jersey_number, position,
+                            player_height_inches, player_weight_pounds
+                        )
+                        VALUES (%s, %s, NULL, %s, NULL, NULL)
+                        ON CONFLICT (team_season_id, player_id) DO NOTHING
+                    """, (team_season_id, player_id, skater.get("positionCode")))
+
+            conn.commit()
+
+    print("Roster backfill complete.")
+
+
+def insert_playoff_data_into_db(conn, series_list: list):
+    if not series_list:
+        print("No playoff data to insert.")
+        return
+
+    cur = conn.cursor()
+    print(f"Attempting to insert {len(series_list)} playoff series records...")
+
+    try:
+        for series in series_list:
+            season_id = series["season_id"]
+
+            cur.execute("""
+                INSERT INTO playoffs (season_id)
+                VALUES (%s)
+                ON CONFLICT (season_id) DO UPDATE SET season_id = EXCLUDED.season_id
+                RETURNING id
+            """, (season_id,))
+            playoff_id = cur.fetchone()[0]
+
+            cur.execute("""
+                INSERT INTO playoff_series (
+                    season_id, playoff_id, round, home_team_season_id, away_team_season_id,
+                    home_team_games_won, away_team_games_won, series_letter
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (series_letter, season_id) DO UPDATE SET
+                    playoff_id          = EXCLUDED.playoff_id,
+                    round               = EXCLUDED.round,
+                    home_team_season_id = EXCLUDED.home_team_season_id,
+                    away_team_season_id = EXCLUDED.away_team_season_id,
+                    home_team_games_won = EXCLUDED.home_team_games_won,
+                    away_team_games_won = EXCLUDED.away_team_games_won
+            """, (
+                season_id,
+                playoff_id,
+                series["round"],
+                series["home_team_season_id"],
+                series["away_team_season_id"],
+                series["home_team_games_won"],
+                series["away_team_games_won"],
+                series["series_letter"]
+            ))
+
+        conn.commit()
+        print("Playoff series insertion complete and committed.")
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Database error during playoff series insertion: {e}")
+    finally:
+        cur.close()
+
+
+def get_playoff_games_from_api(conn, base_url, season_range=(20052006, 20252026)):
+    """
+    Fetches individual playoff game scores by iterating over all possible NHL
+    game IDs. Format: {year}03{round:02d}{series}{game}
+    Series letters map sequentially: round 1 → A-H, round 2 → I-L,
+    round 3 → M-N, round 4 → O.
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM seasons WHERE id BETWEEN %s AND %s", (season_range[0], season_range[1]))
+        season_ids = [s[0] for s in cur.fetchall()]
+
+        cur.execute("""
+            SELECT ts.id, t.id, ts.season_id
+            FROM team_seasons ts
+            JOIN teams t ON ts.team_id = t.id
+        """)
+        team_season_map = {(row[1], row[2]): row[0] for row in cur.fetchall()}
+    finally:
+        cur.close()
+
+    # First letter of each round, series number offset from that letter
+    round_base_letter = {1: ord('A'), 2: ord('I'), 3: ord('M'), 4: ord('O')}
+    max_series_per_round = {1: 8, 2: 4, 3: 2, 4: 1}
+
+    games_data = []
+
+    with requests.Session() as session:
+        for season in season_ids:
+            season_year = int(str(season)[:4])
+            print(f"Fetching playoff games for season {season}...")
+
+            for round_num in range(1, 5):
+                for series_num in range(1, max_series_per_round[round_num] + 1):
+                    series_letter = chr(round_base_letter[round_num] + series_num - 1)
+
+                    for game_num in range(1, 8):
+                        game_id = f"{season_year}03{round_num:02d}{series_num}{game_num}"
+                        url = f"{base_url}/v1/gamecenter/{game_id}/landing"
+                        response = get_with_retry(url, session=session)
+
+                        if response.status_code == 404:
+                            # Sequential: if game N wasn't played, neither was N+1
+                            break
+                        if response.status_code != 200:
+                            print(f"Unexpected status {response.status_code} for game {game_id}")
+                            continue
+
+                        data = response.json()
+                        home_team_id = data["homeTeam"]["id"]
+                        away_team_id = data["awayTeam"]["id"]
+                        home_season_id = team_season_map.get((home_team_id, season))
+                        away_season_id = team_season_map.get((away_team_id, season))
+
+                        if not home_season_id or not away_season_id:
+                            print(f"Could not find team_season_id for game {game_id}")
+                            continue
+
+                        games_data.append({
+                            "season_id": season,
+                            "series_letter": series_letter,
+                            "game_number": game_num,
+                            "home_team_season_id": home_season_id,
+                            "away_team_season_id": away_season_id,
+                            "home_score": data["homeTeam"].get("score"),
+                            "away_score": data["awayTeam"].get("score"),
+                        })
+
+    return games_data
+
+
+def insert_playoff_games_into_db(conn, games):
+    if not games:
+        print("No playoff game data to insert.")
+        return
+
+    cur = conn.cursor()
+    print(f"Attempting to insert {len(games)} playoff game records...")
+
+    try:
+        for game in games:
+            cur.execute("""
+                SELECT id FROM playoff_series
+                WHERE series_letter = %s AND season_id = %s
+            """, (game["series_letter"], game["season_id"]))
+            row = cur.fetchone()
+            if not row:
+                print(
+                    f"No playoff_series found for letter={game['series_letter']} "
+                    f"season={game['season_id']}, skipping game {game['game_number']}"
+                )
+                continue
+            playoff_series_id = row[0]
+
+            cur.execute("""
+                INSERT INTO playoff_games (
+                    playoff_series_id, game_number,
+                    home_team_season_id, away_team_season_id,
+                    home_score, away_score
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (playoff_series_id, game_number) DO UPDATE SET
+                    home_team_season_id = EXCLUDED.home_team_season_id,
+                    away_team_season_id = EXCLUDED.away_team_season_id,
+                    home_score          = EXCLUDED.home_score,
+                    away_score          = EXCLUDED.away_score
+            """, (
+                playoff_series_id,
+                game["game_number"],
+                game["home_team_season_id"],
+                game["away_team_season_id"],
+                game["home_score"],
+                game["away_score"],
+            ))
+
+        conn.commit()
+        print("Playoff games insertion complete and committed.")
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Database error during playoff games insertion: {e}")
+    finally:
+        cur.close()
+
+
+        
     
     

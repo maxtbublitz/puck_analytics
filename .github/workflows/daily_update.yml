@@ -1,0 +1,42 @@
+name: Daily NHL Update
+
+on:
+  schedule:
+    - cron: '0 11 * * *'  # 7 AM ET (UTC-4 during EDT)
+  workflow_dispatch:
+    inputs:
+      season_id:
+        description: 'Season ID (e.g. 20252026). Defaults to current season.'
+        required: false
+        default: '20252026'
+
+env:
+  NHL_API_URL: ${{ secrets.NHL_API_URL }}
+  NHL_API_URL_2: ${{ secrets.NHL_API_URL_2 }}
+  DB_HOST: ${{ secrets.DB_HOST }}
+  DB_PORT: ${{ secrets.DB_PORT }}
+  DB_NAME: ${{ secrets.DB_NAME }}
+  DB_USER: ${{ secrets.DB_USER }}
+  DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary python-dotenv requests
+
+      - name: Update standings
+        run: python -m scripts.update_data standings
+
+      - name: Update player stats
+        run: python -m scripts.update_data player_stats
+
+      - name: Update playoff data (current season)
+        run: python -m scripts.update_data playoff_data ${{ github.event.inputs.season_id || '20252026' }}

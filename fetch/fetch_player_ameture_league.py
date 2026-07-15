@@ -50,7 +50,7 @@ for player in players:
                 print(player, previous_team)
                 cur.execute("""
                     UPDATE players
-                    SET ameture_league = %s
+                    SET amateur_league = %s
                     WHERE id = %s
                 """, (previous_team, player))
                 break
