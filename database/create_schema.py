@@ -67,7 +67,7 @@ def create_schema(conn):
                 birthdate      DATE,
                 country        TEXT,
                 shoots_catches TEXT,
-                ameture_league TEXT
+                amateur_league TEXT
             )
         """)
 
@@ -114,8 +114,16 @@ def create_schema(conn):
         """)
 
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS playoffs (
+                id        SERIAL  PRIMARY KEY,
+                season_id INTEGER NOT NULL UNIQUE REFERENCES seasons(id)
+            )
+        """)
+
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS playoff_series (
                 id                   SERIAL  PRIMARY KEY,
+                playoff_id           INTEGER REFERENCES playoffs(id),
                 season_id            INTEGER NOT NULL REFERENCES seasons(id),
                 round                INTEGER NOT NULL,
                 home_team_season_id  INTEGER NOT NULL REFERENCES team_seasons(id),
@@ -124,6 +132,48 @@ def create_schema(conn):
                 away_team_games_won  INTEGER,
                 series_letter        TEXT    NOT NULL,
                 UNIQUE (series_letter, season_id)
+            )
+        """)
+
+        cur.execute("""
+            ALTER TABLE playoff_series
+            ADD COLUMN IF NOT EXISTS playoff_id INTEGER REFERENCES playoffs(id)
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS playoff_games (
+                id                  SERIAL  PRIMARY KEY,
+                playoff_series_id   INTEGER NOT NULL REFERENCES playoff_series(id),
+                game_number         INTEGER NOT NULL,
+                home_team_season_id INTEGER NOT NULL REFERENCES team_seasons(id),
+                away_team_season_id INTEGER NOT NULL REFERENCES team_seasons(id),
+                home_score          INTEGER,
+                away_score          INTEGER,
+                UNIQUE (playoff_series_id, game_number)
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS analysis_team_season (
+                team_season_id      INTEGER PRIMARY KEY REFERENCES team_seasons(id),
+                season_id           INTEGER NOT NULL REFERENCES seasons(id),
+                avg_age             NUMERIC(5, 2),
+                avg_height_inches   NUMERIC(5, 2),
+                avg_height_inches_f NUMERIC(5, 2),
+                avg_height_inches_d NUMERIC(5, 2),
+                avg_weight_lbs      NUMERIC(6, 2),
+                avg_weight_lbs_f    NUMERIC(6, 2),
+                avg_weight_lbs_d    NUMERIC(6, 2),
+                pct_canadian        NUMERIC(6, 4),
+                pct_american        NUMERIC(6, 4),
+                pct_european        NUMERIC(6, 4),
+                pct_chl             NUMERIC(6, 4),
+                pct_qmjhl           NUMERIC(6, 4),
+                pct_whl             NUMERIC(6, 4),
+                pct_ohl             NUMERIC(6, 4),
+                pct_defense         NUMERIC(6, 4),
+                playoff_score       INTEGER NOT NULL DEFAULT 0,
+                made_playoffs       BOOLEAN NOT NULL DEFAULT FALSE
             )
         """)
 
